@@ -1,0 +1,210 @@
+set.seed(0)
+
+#Define true parameters
+Bd_true <- c(-2,2,2)
+Bsr_true <- c(2,2)
+Sigma_ab_true=matrix(c(1/10,0,0,1/10),nrow=2,ncol=2)
+sigma_u_sqr_true <- 3
+sigma_v_sqr_true <- 1
+sigma_gamma_sqr_true <- (sigma_u_sqr_true+sigma_v_sqr_true)/4
+rho_true <- (sigma_u_sqr_true-sigma_v_sqr_true)/(sigma_u_sqr_true+sigma_v_sqr_true)
+Sigma_e_true <- matrix(c(sigma_gamma_sqr_true,rho_true*sigma_gamma_sqr_true,rho_true*sigma_gamma_sqr_true,sigma_gamma_sqr_true),nrow=2,ncol=2)
+
+#Simulate data array X
+n=100
+p=5
+X<-array(dim=c(n,n,p))
+X_row<-rnorm(n=n,mean=0,sd=1)
+X_col<-rnorm(n=n,mean=0,sd=1)
+for(i in seq(1,n,1)){
+  X[i,-i,4]<-rep(X_row[i],n-1)
+  X[-i,i,5]<-rep(X_col[i],n-1)
+}
+X[,,2]<-rnorm(n=n^2,mean=0,sd=1)
+Z<-rbinom(n=n,size=1,prob=.5)
+for(i in seq(1,n,1)){
+  for(j in seq(1,n,1)){
+    if(i!=j){
+      X[i,j,3] <- (Z[i]*Z[j])/0.42
+    }
+  }
+}
+X[,,1] <- 1
+diag(X[,,1])<- NA
+diag(X[,,2])<- NA
+diag(X[,,3])<- NA
+diag(X[,,4])<- NA
+diag(X[,,5])<- NA
+
+
+#Define "true" matrix Y
+Theta<-matrix(nrow=n,ncol=n)
+ab<-mvrnorm(n=n,mu=c(0,0),Sigma=Sigma_ab_true)
+for(i in seq(1,n,1)){
+  for(j in seq(i,n,1)){
+    if(i!=j){
+      ep<-mvrnorm(mu=c(0,0),Sigma=Sigma_e_true)
+      Theta[i,j]<-X[i,j,c(1,2,3)]%*%t(t(Bd_true))+X[i,j,c(4,5)]%*%t(t(Bsr_true))+ab[i,1]+ab[j,2]+ep[1]
+      Theta[j,i]<-X[j,i,c(1,2,3)]%*%t(t(Bd_true))+X[j,i,c(4,5)]%*%t(t(Bsr_true))+ab[j,1]+ab[i,2]+ep[2]
+    }
+  }
+}
+#Theta <- Theta/10
+diag(Theta) <- NA
+
+Y<-matrix(nrow=n,ncol=n)
+for(i in seq(1,n,1)){
+  for(j in seq(1,n,1)){
+    if(i!=j){
+      Y[i,j]<-rpois(n=1,lambda=exp(Theta[i,j]))
+    }
+  }
+}
+diag(Y) <- NA
+
+#Set Prior Parameters
+B_d0 <- matrix(nrow=3,ncol=1)
+B_d0[,1] <- c(0,0,0)
+Sigma_Bd <- matrix(0,nrow=3,ncol=3)
+diag(Sigma_Bd) <- 1
+
+B_sr0 <- matrix(nrow=2,ncol=1)
+B_sr0[,1] <- c(0,0)
+Sigma_Bsr <- matrix(0,nrow=2,ncol=2)
+diag(Sigma_Bsr) <- 1
+
+Sigma_ab0 <- matrix(nrow=2,ncol=2)
+Sigma_ab0[1,] <- c(1,.5)
+Sigma_ab0[2,] <- c(.5,1)
+v_0 <- 4
+
+alpha_u1 = alpha_u2 = alpha_v1 = alpha_v2 = 1
+
+#Set starting values
+B_d <- t(t(Bd_true))
+B_sr <- t(t(Bsr_true))
+Sigma_ab <- Sigma_ab_true
+sigma_u_sqr <- sigma_u_sqr_true
+sigma_v_sqr <- sigma_v_sqr_true
+sigma_gamma_sqr <- (sigma_u_sqr+sigma_v_sqr)/4
+rho <- (sigma_u_sqr-sigma_v_sqr)/(sigma_u_sqr+sigma_v_sqr)
+Sigma_e <- matrix(c(sigma_gamma_sqr,rho*sigma_gamma_sqr,rho*sigma_gamma_sqr,sigma_gamma_sqr),nrow=2,ncol=2)
+
+#X_u and X_v
+count <- 1
+X_u <- matrix(nrow=(n^2-n)/2,ncol=2*n+3)
+X_v <- matrix(nrow=(n^2-n)/2,ncol=2*n+3)
+for(i in seq(1,n,1)){
+  for(j in seq(i,n,1)){
+    if(i!=j){
+      temp <- X[i,,]
+      temp2 <- X[j,,]
+      sequence1 <- rep(0,n)
+      sequence1[i] <- 1
+      sequence1[j] <- 1
+      sequence2 <- rep(0,n)
+      sequence2[i] <- 1
+      sequence2[j] <- 1
+      X_u[count,] <- c(2,temp[j,2]+temp2[i,2],temp[j,3]+temp2[i,3],sequence1,sequence2)
+      sequence1[j] <- -1
+      sequence2[i] <- -1
+      X_v[count,] <- c(0,temp[j,2]-temp2[i,2],temp[j,3]-temp2[i,3],sequence1,sequence2)
+      count <- count+1
+    }
+  }
+}
+X_u_sqr <- t(X_u)%*%X_u
+X_v_sqr <- t(X_v)%*%X_v
+
+#X_sr
+X_sr <- matrix(0,nrow=n*2,ncol=2)
+X_sr[seq(1,n,1),1] <- X_row
+X_sr[seq(n+1,n*2,1),2] <- X_col
+
+#Store values
+k <- seq(1,1000,1)
+betas <- matrix(nrow=1000,ncol=p)
+rs <- 0
+total <- 0
+
+#Start Gibbs sampler                         
+for(l in k){
+  
+  #Sample B_d, s, r
+  sigma_a_sqr <- Sigma_ab[1,1]
+  sigma_b_sqr <- Sigma_ab[2,2]
+  sigma_ab <- Sigma_ab[1,2]
+  Delta <- sigma_a_sqr*sigma_b_sqr - sigma_ab^2
+  I1 <- matrix(0,nrow=n,ncol=n)
+  diag(I1) <- sigma_b_sqr / Delta
+  I2 <- I1
+  diag(I2) <- -sigma_ab / Delta
+  I3 <- I1
+  diag(I3) <- -sigma_ab / Delta
+  I4 <- I1
+  diag(I4) <- sigma_a_sqr / Delta
+  Sigma_sr <- cbind(rbind(I1,I3), rbind(I2,I4))
+  Sigma_sr <- solve(Sigma_sr)
+  I5 <- matrix(0,nrow=3,ncol=200)
+  I6 <- matrix(0,nrow=200,ncol=3)
+  Sigma <- solve(cbind(rbind(solve(Sigma_Bd),I6),
+                       rbind(I5,solve(Sigma_sr)))+X_u_sqr/sigma_u_sqr+X_v_sqr/sigma_v_sqr)
+  
+  u <- t(Theta)[lower.tri(t(Theta))]+Theta[lower.tri(Theta)]
+  u <- t(t(u))
+  v <- t(Theta)[lower.tri(t(Theta))]-Theta[lower.tri(Theta)]
+  v <- t(t(v))
+  
+  mu <- Sigma%*%(rbind(solve(Sigma_Bd)%*%B_d0,
+                       solve(Sigma_sr)%*%X_sr%*%B_sr)+(t(X_u)%*%u)/sigma_u_sqr+(t(X_v)%*%v)/sigma_v_sqr)
+  
+  samp <- mvrnorm(n=1,mu=mu,Sigma=Sigma)
+  B_d <- t(t(samp[c(1,2,3)]))
+  s <- t(t(samp[seq(4,n+3,1)]))
+  r <- t(t(samp[seq(n+4,2*n+3,1)]))
+  
+  #Sample B_r, B_s
+  Sigma <- solve(solve(Sigma_Bsr)+t(X_sr)%*%solve(Sigma_sr)%*%X_sr)
+  mu <- Sigma%*%(solve(Sigma_Bsr)%*%B_sr0+t(X_sr)%*%solve(Sigma_sr)%*%rbind(s,r))
+  B_sr <- t(t(mvrnorm(n=1,mu=mu,Sigma=Sigma)))
+  
+  #Sample Sigma_ab
+  a <- s - (t(t(X_row))%*%B_sr[1])
+  b <- r - (t(t(X_col))%*%B_sr[2])
+  Sigma <- Sigma_ab0+t(cbind(a,b))%*%cbind(a,b)
+  mu <- v_0+n
+  Sigma_ab <- solve(MCMCpack::rwish(mu,solve(Sigma)))
+  
+  #Sample Sigma_e
+  u_pred <- X_u%*%rbind(B_d,s,r)
+  v_pred <- X_v%*%rbind(B_d,s,r)
+  sigma_u_sqr <- 1/rgamma(n=1,shape=alpha_u1+(1/2)*choose(n,2), scale=1/(alpha_u2+(1/2)*sum((u-u_pred)^2)))
+  sigma_v_sqr <- 1/rgamma(n=1,shape=alpha_v1+(1/2)*choose(n,2), scale=1/(alpha_v2+(1/2)*sum((v-v_pred)^2)))
+  sigma_gamma_sqr <- (sigma_u_sqr+sigma_v_sqr)/4
+  rho <- (sigma_u_sqr-sigma_v_sqr)/(sigma_u_sqr+sigma_v_sqr)
+  Sigma_e <- matrix(c(sigma_gamma_sqr,rho*sigma_gamma_sqr,rho*sigma_gamma_sqr,sigma_gamma_sqr),nrow=2,ncol=2)
+  
+  #Sample Theta
+  #I <- matrix(c(20,0,0,20),nrow=2,ncol=2)
+  for(i in seq(1,n,1)){
+    for(j in seq(i,n,1)){
+      if(i!=j){
+        Tprop <- mvrnorm(n=1,mu=c(X[i,j,c(1,2,3)]%*%B_d+X[i,j,c(4,5)]%*%B_sr+a[i]+b[j],X[j,i,c(1,2,3)]%*%B_d+X[j,i,c(4,5)]%*%B_sr+a[j]+b[i]), Sigma=Sigma_e)
+        logr <- dpois(Y[i,j],exp(Tprop[1]),log=T)-
+          dpois(Y[i,j],exp(Theta[i,j]),log=T)+
+          dpois(Y[j,i],exp(Tprop[2]),log=T)-
+          dpois(Y[j,i],exp(Theta[j,i]),log=T)
+        if(log(runif(1))<logr){
+          Theta[i,j]<-Tprop[1]
+          Theta[j,i]<-Tprop[2]
+          rs <- rs + 1
+        }
+        total <- total + 1
+      }
+    }
+  }
+  
+  #Store betas
+  betas[l,]<-c(c(B_d),c(B_sr))
+  print(l)
+}  
